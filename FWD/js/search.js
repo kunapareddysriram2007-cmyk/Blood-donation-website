@@ -1,16 +1,36 @@
 let currentUserLocation = null;
+let pendingRequestTarget = null;
 
 document.addEventListener("DOMContentLoaded", function () {
-    setupEventHandlers();
+    const form = document.getElementById("searchForm");
+    const detectButton = document.getElementById("detectLocationBtn");
+    const confirmButton = document.getElementById("confirmRequestBtn");
+
+    if (form) form.addEventListener("submit", handleSearch);
+    if (detectButton) detectButton.addEventListener("click", detectUserLocation);
+    if (confirmButton) confirmButton.addEventListener("click", confirmSendRequest);
+
+    bindModalControls();
+    renderMySentRequests();
     updateNotificationBadge();
 });
 
-function setupEventHandlers() {
-    const form = document.getElementById("searchForm");
-    if (form) form.addEventListener("submit", handleSearch);
+function bindModalControls() {
+    const requestModal = document.getElementById("requestModal");
+    const mapModal = document.getElementById("mapModal");
 
-    const detectBtn = document.getElementById("detectLocationBtn");
-    if (detectBtn) detectBtn.addEventListener("click", detectUserLocation);
+    document.getElementById("closeRequestModalBtn")?.addEventListener("click", closeRequestModal);
+    document.getElementById("cancelRequestBtn")?.addEventListener("click", closeRequestModal);
+    document.getElementById("closeMapModalBtn")?.addEventListener("click", closeMapModal);
+
+    [requestModal, mapModal].forEach(modal => {
+        if (!modal) return;
+        modal.addEventListener("click", function (event) {
+            if (event.target === modal) {
+                modal.id === "requestModal" ? closeRequestModal() : closeMapModal();
+            }
+        });
+    });
 }
 
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -27,84 +47,77 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 function detectUserLocation() {
+    const alertBox = document.getElementById("searchAlert");
+    const button = document.getElementById("detectLocationBtn");
+    const loading = document.getElementById("locationLoading");
+    const info = document.getElementById("detectedLocation");
+    const text = document.getElementById("locationText");
+
+    hideAlert(alertBox);
+
     if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser.");
+        showAlert(alertBox, "Geolocation is not supported by your browser.", "warning");
         return;
     }
 
-    const btn = document.getElementById("detectLocationBtn");
-    const loading = document.getElementById("locationLoading");
-    const info = document.getElementById("detectedLocation");
-
-    btn.disabled = true;
-    btn.textContent = "Detecting...";
+    button.disabled = true;
+    button.textContent = "Detecting...";
     loading.classList.remove("hidden");
 
     navigator.geolocation.getCurrentPosition(
-        function (pos) {
+        function (position) {
             currentUserLocation = {
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude
+                latitude: position.coords.latitude,
+                longitude: position.coords.longitude
             };
-
-            document.getElementById("locationText").textContent =
-                `Lat: ${currentUserLocation.latitude.toFixed(5)}, Lng: ${currentUserLocation.longitude.toFixed(5)}`;
-
-            loading.classList.add("hidden");
+            text.textContent = `Lat: ${currentUserLocation.latitude.toFixed(5)}, Lng: ${currentUserLocation.longitude.toFixed(5)}`;
             info.classList.remove("hidden");
-            btn.disabled = false;
-            btn.textContent = "Location Detected";
+            loading.classList.add("hidden");
+            button.disabled = false;
+            button.textContent = "Location Detected";
         },
         function () {
-            alert("Could not detect location. You can still search without distance sorting.");
             loading.classList.add("hidden");
-            btn.disabled = false;
-            btn.textContent = "Detect My Location";
-        }
+            button.disabled = false;
+            button.textContent = "Detect My Location";
+            showAlert(alertBox, "Could not detect location. Search will still work without distance sorting.", "warning");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 }
 
-function handleSearch(e) {
-    e.preventDefault();
+function handleSearch(event) {
+    event.preventDefault();
+
     const bloodGroup = document.getElementById("bloodGroup").value;
+    const resultsSection = document.getElementById("resultsSection");
+    const loading = document.getElementById("searchLoading");
 
     if (!bloodGroup) {
-        alert("Select blood group.");
+        showAlert(document.getElementById("searchAlert"), "Please select a blood group.", "danger");
         return;
     }
 
-    document.getElementById("resultsSection").classList.remove("hidden");
-    document.getElementById("searchLoading").classList.remove("hidden");
+    resultsSection.classList.remove("hidden");
+    loading.classList.remove("hidden");
     document.getElementById("noResults").classList.add("hidden");
 
     setTimeout(function () {
         performSearch(bloodGroup);
-        document.getElementById("searchLoading").classList.add("hidden");
+        loading.classList.add("hidden");
     }, 250);
 }
 
 function performSearch(bloodGroup) {
-    const donors = JSON.parse(localStorage.getItem("donors")) || [];
     const myPhone = getLoggedDonorPhone();
-    // make sure expired requests are reflected before any actions
-    const allReqs = JSON.parse(localStorage.getItem("requests")) || [];
-    updateExpiredRequests(allReqs);
-    updateExpiredRequests(allReqs);
+    const donors = appStore.getDonors().filter(donor => donor.blood === bloodGroup && donor.phone !== myPhone);
 
-    const matches = donors.filter(d => d.blood === bloodGroup && d.phone !== myPhone);
-
-    if (matches.length === 0) {
-        document.getElementById("noResults").classList.remove("hidden");
-        document.getElementById("donorsTable").style.display = "none";
-        return;
-    }
-
-    const withDistance = matches.map(function (d) {
-        const lat = parseFloat(d.lat);
-        const lng = parseFloat(d.lng);
+    const normalized = donors.map(donor => {
+        const lat = parseFloat(donor.lat);
+        const lng = parseFloat(donor.lng);
         const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
-
         let distance = null;
+
         if (currentUserLocation && hasCoords) {
             distance = calculateDistance(
                 currentUserLocation.latitude,
@@ -114,283 +127,209 @@ function performSearch(bloodGroup) {
             );
         }
 
-        return {
-            ...d,
-            hasCoords,
-            lat,
-            lng,
-            distance
-        };
+        return { ...donor, lat, lng, hasCoords, distance };
     });
 
-    withDistance.sort(function (a, b) {
-        if (a.distance == null && b.distance == null) return 0;
+    normalized.sort(function (a, b) {
+        if (a.distance == null && b.distance == null) return a.name.localeCompare(b.name);
         if (a.distance == null) return 1;
         if (b.distance == null) return -1;
         return a.distance - b.distance;
     });
 
-    displaySearchResults(withDistance);
+    displaySearchResults(normalized);
 }
 
 function displaySearchResults(donors) {
+    const table = document.getElementById("donorsTable");
     const body = document.getElementById("donorsTableBody");
+    const noResults = document.getElementById("noResults");
     body.innerHTML = "";
 
-    donors.forEach(function (d) {
-        const row = document.createElement("tr");
-        const distanceText = d.distance == null ? "N/A" : `${d.distance.toFixed(2)} km`;
-        row.innerHTML = `
-            <td><strong>${escapeHtml(d.name)}</strong></td>
-            <td><strong>${escapeHtml(d.blood)}</strong></td>
-            <td>${escapeHtml(d.city)}, ${escapeHtml(d.area || "")}</td>
-            <td><strong>${distanceText}</strong></td>
-            <td class="result-actions"></td>
-        `;
-
-        const actionsCell = row.querySelector(".result-actions");
-        const requestBtn = document.createElement("button");
-        requestBtn.className = "btn btn-primary btn-small";
-        requestBtn.textContent = "Send Request";
-        requestBtn.addEventListener("click", function () {
-            sendRequest(d.phone, d.city, d.name);
-        });
-        actionsCell.appendChild(requestBtn);
-
-        const mapBtn = document.createElement("button");
-        mapBtn.className = "btn btn-secondary btn-small";
-        mapBtn.style.marginLeft = "0.5rem";
-        if (d.hasCoords) {
-            mapBtn.textContent = "View Map";
-            mapBtn.addEventListener("click", function () {
-                viewDonorMap(d.city, d.lat, d.lng);
-            });
-        } else {
-            mapBtn.textContent = "Map N/A";
-            mapBtn.disabled = true;
-        }
-        actionsCell.appendChild(mapBtn);
-
-        body.appendChild(row);
-    });
-
-    document.getElementById("donorsTable").style.display = "table";
-    document.getElementById("noResults").classList.add("hidden");
-}
-
-function sendRequest(toPhone, donorCity, donorName) {
-    // open modal to confirm emergency and send
-    const loggedPhone = getLoggedDonorPhone();
-    if (!loggedPhone) {
-        alert("Login required.");
+    if (!donors.length) {
+        table.classList.add("hidden");
+        noResults.classList.remove("hidden");
         return;
     }
 
-    // store pending target info on window for modal confirmation
-    window.__pendingRequestTarget = { toPhone: toPhone, toCity: donorCity, toName: donorName };
-    const info = document.getElementById("requestModalDonorInfo");
-    info.textContent = `Requesting from ${donorName} (${donorCity})`;
+    table.classList.remove("hidden");
+    noResults.classList.add("hidden");
+
+    donors.forEach(donor => {
+        const row = document.createElement("tr");
+        const distanceText = donor.distance == null ? "N/A" : `${donor.distance.toFixed(2)} km`;
+
+        row.innerHTML = `
+            <td><strong>${escapeHtml(donor.name)}</strong></td>
+            <td><span class="badge badge-danger">${escapeHtml(donor.blood)}</span></td>
+            <td>${escapeHtml(donor.city)}${donor.area ? " / " + escapeHtml(donor.area) : ""}</td>
+            <td>${distanceText}</td>
+            <td class="result-actions"></td>
+        `;
+
+        const actionCell = row.querySelector(".result-actions");
+
+        const requestButton = document.createElement("button");
+        requestButton.className = "btn btn-primary btn-small";
+        requestButton.type = "button";
+        requestButton.textContent = "Send Request";
+        requestButton.addEventListener("click", function () {
+            openRequestModal(donor);
+        });
+        actionCell.appendChild(requestButton);
+
+        const mapButton = document.createElement("button");
+        mapButton.className = "btn btn-secondary btn-small";
+        mapButton.type = "button";
+        mapButton.style.marginLeft = "0.5rem";
+        mapButton.textContent = donor.hasCoords ? "View Map" : "Map N/A";
+        mapButton.disabled = !donor.hasCoords;
+        if (donor.hasCoords) {
+            mapButton.addEventListener("click", function () {
+                viewDonorMap(donor);
+            });
+        }
+        actionCell.appendChild(mapButton);
+
+        body.appendChild(row);
+    });
+}
+
+function openRequestModal(donor) {
+    pendingRequestTarget = donor;
+    document.getElementById("requestModalDonorInfo").textContent = `${donor.name} • ${donor.city}`;
+    document.getElementById("requestEmergencyCheckbox").checked = false;
+
     const modal = document.getElementById("requestModal");
     modal.classList.remove("hidden");
-    modal.style.display = "flex";
+    modal.classList.add("show");
 }
 
 function closeRequestModal() {
     const modal = document.getElementById("requestModal");
     modal.classList.add("hidden");
-    modal.style.display = "none";
+    modal.classList.remove("show");
+    pendingRequestTarget = null;
 }
 
-document.addEventListener("DOMContentLoaded", function () {
-    const confirmBtn = document.getElementById("confirmRequestBtn");
-    if (confirmBtn) {
-        confirmBtn.addEventListener("click", function () {
-            const pending = window.__pendingRequestTarget;
-            if (!pending) return;
-            const emergency = !!document.getElementById("requestEmergencyCheckbox").checked;
-            const fromPhone = getLoggedDonorPhone();
-            if (!fromPhone) {
-                alert("Login required.");
-                closeRequestModal();
-                return;
-            }
+function confirmSendRequest() {
+    const requester = getLoggedInDonor();
+    const alertBox = document.getElementById("searchAlert");
 
-            // attempt to get requester name and city from donors list
-            const donors = JSON.parse(localStorage.getItem("donors")) || [];
-            const requester = donors.find(d => d.phone === fromPhone) || {};
-
-            const newRequest = {
-                id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9),
-                fromName: requester.name || "",
-                fromPhone: fromPhone,
-                fromCity: requester.city || "",
-                toName: pending.toName || "",
-                toPhone: pending.toPhone,
-                toCity: pending.toCity || "",
-                time: new Date().toISOString(),
-                emergency: emergency,
-                status: "pending"
-            };
-
-            const requests = JSON.parse(localStorage.getItem("requests")) || [];
-            requests.push(newRequest);
-            localStorage.setItem("requests", JSON.stringify(requests));
-
-            closeRequestModal();
-            document.getElementById("requestEmergencyCheckbox").checked = false;
-            window.__pendingRequestTarget = null;
-            alert(`Request sent to ${newRequest.toName}`);
-            renderMySentRequests();
-            updateNotificationBadge();
-        });
+    if (!requester) {
+        showAlert(alertBox, "Login required.", "danger");
+        closeRequestModal();
+        return;
     }
 
-    // initial render of sent requests
+    if (!pendingRequestTarget) return;
+
+    const requests = appStore.updateExpiredRequests();
+    const emergency = document.getElementById("requestEmergencyCheckbox").checked;
+
+    const duplicatePending = requests.find(request =>
+        request.fromPhone === requester.phone &&
+        request.toPhone === pendingRequestTarget.phone &&
+        request.status === "pending"
+    );
+
+    if (duplicatePending) {
+        showAlert(alertBox, "You already have a pending request for this donor.", "warning");
+        closeRequestModal();
+        return;
+    }
+
+    requests.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        fromName: requester.name,
+        fromPhone: requester.phone,
+        fromCity: requester.city,
+        toName: pendingRequestTarget.name,
+        toPhone: pendingRequestTarget.phone,
+        toCity: pendingRequestTarget.city,
+        time: new Date().toISOString(),
+        emergency,
+        status: "pending"
+    });
+
+    appStore.saveRequests(requests);
+    closeRequestModal();
     renderMySentRequests();
-});
-
-function formatDateTime(dateString) {
-    const d = new Date(dateString);
-    return d.toLocaleString();
-}
-
-function getTimeAgo(dateString) {
-    const now = new Date();
-    const time = new Date(dateString);
-    const diff = now - time;
-
-    const mins = Math.floor(diff / 60000);
-    const hrs = Math.floor(mins / 60);
-    const days = Math.floor(hrs / 24);
-
-    if (mins < 1) return "Just now";
-    if (mins < 60) return `${mins} min ago`;
-    if (hrs < 24) return `${hrs} hr ago`;
-    if (days < 7) return `${days} day ago`;
-    return "Older";
+    updateNotificationBadge();
+    showAlert(alertBox, `Request sent to ${pendingRequestTarget?.name || "donor"}.`, "success");
 }
 
 function renderMySentRequests() {
-    const loggedPhone = getLoggedDonorPhone();
-    if (!loggedPhone) return;
-
-    const all = JSON.parse(localStorage.getItem("requests")) || [];
-
-    // update expiration before filtering
-    updateExpiredRequests(all);
-
-    let mine = all.filter(r => r.fromPhone === loggedPhone);
-
     const section = document.getElementById("mySentRequestsSection");
-    const noSent = document.getElementById("noSentRequests");
+    const noData = document.getElementById("noSentRequests");
     const container = document.getElementById("sentRequestsContainer");
     const body = document.getElementById("sentRequestsTableBody");
+    const myPhone = getLoggedDonorPhone();
 
-    if (!mine || mine.length === 0) {
-        section.classList.add("hidden");
-        noSent.classList.remove("hidden");
+    if (!myPhone || !section || !body) return;
+
+    const requests = appStore.updateExpiredRequests().filter(request => request.fromPhone === myPhone);
+    body.innerHTML = "";
+
+    if (!requests.length) {
+        section.classList.remove("hidden");
+        noData.classList.remove("hidden");
         container.classList.add("hidden");
         return;
     }
 
     section.classList.remove("hidden");
-    noSent.classList.add("hidden");
+    noData.classList.add("hidden");
     container.classList.remove("hidden");
-    body.innerHTML = "";
 
-    mine.sort((a,b) => new Date(b.time) - new Date(a.time));
+    requests.sort((a, b) => new Date(b.time) - new Date(a.time));
 
-    mine.forEach(function (r) {
-        const tr = document.createElement("tr");
-        const emergencyHtml = r.emergency ? '<span class="badge badge-danger">Emergency</span>' : '<span class="badge badge-info">Normal</span>';
-        let statusHtml = '';
-        if (r.status === 'accepted') {
-            statusHtml = `<span class="badge badge-success">Accepted</span><br><small>Donor: ${escapeHtml(r.toName)} (${escapeHtml(r.toPhone)})</small>`;
-        } else if (r.status === 'pending') {
-            statusHtml = '<span class="text-muted">Pending</span>';
-        } else if (r.status === 'rejected') {
-            statusHtml = `<span class="badge badge-danger">Rejected</span><br><small>Donor: ${escapeHtml(r.toName)} (${escapeHtml(r.toPhone)})</small>`;
-        } else if (r.status === 'denied') {
-            statusHtml = `<span class="badge badge-warning">Denied (offline)</span><br><small>Donor: ${escapeHtml(r.toName)} (${escapeHtml(r.toPhone)})</small>`;
-        }
+    requests.forEach(request => {
+        const row = document.createElement("tr");
+        const typeHtml = request.emergency
+            ? '<span class="badge badge-danger">Emergency</span>'
+            : '<span class="badge badge-info">Normal</span>';
 
-        tr.innerHTML = `
-            <td><strong>${escapeHtml(r.toName)}</strong></td>
-            <td>${escapeHtml(r.toCity || '')}</td>
-            <td>${getTimeAgo(r.time)}<br><small style="color:#999">${formatDateTime(r.time)}</small></td>
-            <td>${emergencyHtml}</td>
+        let statusHtml = '<span class="badge badge-muted">Pending</span>';
+        if (request.status === "accepted") statusHtml = '<span class="badge badge-success">Accepted</span>';
+        if (request.status === "rejected") statusHtml = '<span class="badge badge-danger">Rejected</span>';
+        if (request.status === "denied") statusHtml = '<span class="badge badge-warning">Auto-denied</span>';
+
+        row.innerHTML = `
+            <td><strong>${escapeHtml(request.toName)}</strong></td>
+            <td>${escapeHtml(request.toCity || "N/A")}</td>
+            <td>${getTimeAgo(request.time)}<br><small class="text-muted">${formatDateTime(request.time)}</small></td>
+            <td>${typeHtml}</td>
             <td>${statusHtml}</td>
         `;
-
-        body.appendChild(tr);
+        body.appendChild(row);
     });
 }
 
-function viewDonorMap(city, lat, lng) {
+function viewDonorMap(donor) {
+    const mapContainer = document.getElementById("mapContainer");
     const modal = document.getElementById("mapModal");
-    const container = document.getElementById("mapContainer");
     const title = document.getElementById("mapTitle");
+    title.textContent = `${donor.name} - Location`;
 
-    title.textContent = `${city} - Donor Location`;
-
-    container.innerHTML = `
+    const bbox = `${donor.lng - 0.01},${donor.lat - 0.01},${donor.lng + 0.01},${donor.lat + 0.01}`;
+    mapContainer.innerHTML = `
         <iframe
-            src="https://www.openstreetmap.org/export/embed.html?bbox=${lng - 0.01},${lat - 0.01},${lng + 0.01},${lat + 0.01}&layer=mapnik&marker=${lat},${lng}"
-            width="100%" height="300"
-            style="border:0;border-radius:6px">
+            src="https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${donor.lat},${donor.lng}"
+            width="100%" height="320" style="border:0;">
         </iframe>
-        <p style="margin-top:10px">
-            <a href="https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=14/${lat}/${lng}" target="_blank" rel="noopener noreferrer">
-                Open in Maps
-            </a>
-        </p>
     `;
 
     modal.classList.remove("hidden");
-    modal.style.display = "flex";
+    modal.classList.add("show");
 }
 
 function closeMapModal() {
     const modal = document.getElementById("mapModal");
     modal.classList.add("hidden");
-    modal.style.display = "none";
+    modal.classList.remove("show");
 }
 
-document.addEventListener("click", function (event) {
-    const modal = document.getElementById("mapModal");
-    if (event.target === modal) {
-        closeMapModal();
-    }
-});
-
-function escapeHtml(value) {
-    return String(value || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
-
-// iterate through provided request list and mark emergency pending items older than 15 minutes as denied
-function updateExpiredRequests(allReqs) {
-    let changed = false;
-    const now = Date.now();
-    allReqs.forEach(r => {
-        if (r.status === 'pending' && r.emergency) {
-            const sentTime = new Date(r.time).getTime();
-            if (now - sentTime > 15 * 60000) {
-                r.status = 'denied';
-                changed = true;
-            }
-        }
-    });
-    if (changed) {
-        localStorage.setItem("requests", JSON.stringify(allReqs));
-    }
-}
-
-// keep view up to date in case timeouts occur while the user is on the page
 setInterval(function () {
     renderMySentRequests();
     updateNotificationBadge();

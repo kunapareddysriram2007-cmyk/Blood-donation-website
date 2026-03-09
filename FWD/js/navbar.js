@@ -1,152 +1,100 @@
 document.addEventListener("DOMContentLoaded", function () {
-    checkLoginProtection();
+    protectPage();
     setupNavbar();
-    updateNotificationBadge();
     setActiveNavLink();
+    updateNotificationBadge();
+    window.addEventListener("storage", updateNotificationBadge);
 });
 
-function checkLoginProtection() {
-    const currentPage = window.location.pathname.split("/").pop() || "home.html";
-    const loginRequiredPages = ["home.html", "search.html", "requests.html", "contact.html"];
+const PUBLIC_PAGES = ["login.html", "register.html"];
+const NAV_ITEMS = [
+    { page: "home.html", label: "Home" },
+    { page: "register.html", label: "Register" },
+    { page: "search.html", label: "Search Donor" },
+    { page: "requests.html", label: "Requests" },
+    { page: "contact.html", label: "Contact" }
+];
 
-    if (loginRequiredPages.includes(currentPage) && !isLoggedIn()) {
+function getCurrentPage() {
+    return window.location.pathname.split("/").pop() || "home.html";
+}
+
+function protectPage() {
+    const currentPage = getCurrentPage();
+    if (!PUBLIC_PAGES.includes(currentPage) && !isLoggedIn()) {
         window.location.href = "login.html";
     }
 }
 
 function setupNavbar() {
-    const loggedPhone = getLoggedDonorPhone();
-    if (!loggedPhone) return;
-
-    const donors = JSON.parse(localStorage.getItem("donors")) || [];
-    const donor = donors.find(d => d.phone === loggedPhone);
-    const displayName = donor ? donor.name : loggedPhone;
-
-    let navWrapper = document.querySelector("nav .nav-wrapper");
-    if (navWrapper) return;
-
     const nav = document.querySelector("nav");
-    if (!nav) return;
+    if (!nav || nav.dataset.ready === "true") return;
 
-    navWrapper = document.createElement("div");
-    navWrapper.className = "nav-wrapper";
+    const donor = getLoggedInDonor();
+    const currentPage = getCurrentPage();
 
-    const container = nav.querySelector(".container");
-    if (container) {
-        nav.removeChild(container);
-        navWrapper.appendChild(container);
-    }
+    const linksHtml = NAV_ITEMS.map(item => {
+        const activeClass = item.page === currentPage ? "active" : "";
+        const extraAttr = item.page === "requests.html" ? 'data-nav="requests"' : "";
+        return `<li><a href="${item.page}" class="${activeClass}" ${extraAttr}>${item.label}</a></li>`;
+    }).join("");
 
-    const userProfile = document.createElement("div");
-    userProfile.className = "user-profile";
-    userProfile.innerHTML = `
-        <div class="user-info">
-            <span class="user-name">${displayName}</span>
-            <button class="btn-logout" onclick="logout()">Logout</button>
+    nav.innerHTML = `
+        <div class="container">
+            <a class="logo" href="home.html">Blood Donation Network</a>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
+            <div class="nav-collapse" id="navCollapse">
+                <ul class="nav-links">${linksHtml}</ul>
+                <div class="nav-actions">
+                    ${donor ? `<div class="user-chip">👤 <span>${escapeHtml(donor.name)}</span></div>
+                    <button class="btn btn-secondary btn-small" id="logoutBtn" type="button">Logout</button>` : ""}
+                </div>
+            </div>
         </div>
     `;
-    navWrapper.appendChild(userProfile);
-    nav.appendChild(navWrapper);
 
-    if (!document.querySelector("style[data-navbar]")) {
-        const style = document.createElement("style");
-        style.setAttribute("data-navbar", "true");
-        style.textContent = `
-            nav .nav-wrapper {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                width: 100%;
-                gap: 1.5rem;
-            }
-            nav .user-profile {
-                display: flex;
-                align-items: center;
-                white-space: nowrap;
-            }
-            nav .user-info {
-                display: flex;
-                align-items: center;
-                gap: 0.7rem;
-                background-color: rgba(255,255,255,0.15);
-                padding: 0.35rem 0.7rem;
-                border-radius: 6px;
-            }
-            nav .user-name {
-                color: white;
-                font-size: 0.9rem;
-            }
-            nav .btn-logout {
-                background-color: #ff4757;
-                color: white;
-                border: none;
-                padding: 0.3rem 0.7rem;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 0.8rem;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-}
+    nav.dataset.ready = "true";
 
-function updateNotificationBadge() {
-    const loggedPhone = getLoggedDonorPhone();
-    if (!loggedPhone) return;
-
-    const requests = JSON.parse(localStorage.getItem("requests")) || [];
-    // only consider pending requests for notification count
-    const unresolvedRequests = requests.filter(r => r.toPhone === loggedPhone && r.status === 'pending');
-    const requestLink = document.querySelector('nav ul li a[href="requests.html"]');
-    if (!requestLink) return;
-
-    const existingBadge = requestLink.querySelector(".notification-badge");
-    if (existingBadge) {
-        existingBadge.remove();
+    const toggleButton = document.getElementById("navToggle");
+    const collapse = document.getElementById("navCollapse");
+    if (toggleButton && collapse) {
+        toggleButton.addEventListener("click", function () {
+            collapse.classList.toggle("open");
+        });
     }
 
-    if (unresolvedRequests.length > 0) {
-        const badge = document.createElement("span");
-        badge.className = "notification-badge";
-        badge.textContent = unresolvedRequests.length;
-        requestLink.style.position = "relative";
-        requestLink.appendChild(badge);
-
-        if (!document.querySelector("style[data-badge]")) {
-            const style = document.createElement("style");
-            style.setAttribute("data-badge", "true");
-            style.textContent = `
-                .notification-badge {
-                    position: absolute;
-                    top: -8px;
-                    right: -8px;
-                    background-color: #dc3545;
-                    color: white;
-                    border-radius: 50%;
-                    min-width: 20px;
-                    height: 20px;
-                    padding: 0 5px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 0.72rem;
-                    font-weight: bold;
-                }
-            `;
-            document.head.appendChild(style);
-        }
+    const logoutButton = document.getElementById("logoutBtn");
+    if (logoutButton) {
+        logoutButton.addEventListener("click", logout);
     }
 }
 
 function setActiveNavLink() {
-    const currentPage = window.location.pathname.split("/").pop() || "home.html";
-    document.querySelectorAll("nav a").forEach(function (link) {
-        if (link.getAttribute("href") === currentPage) {
-            link.classList.add("active");
-        } else {
-            link.classList.remove("active");
-        }
+    const currentPage = getCurrentPage();
+    document.querySelectorAll("nav a[href]").forEach(link => {
+        const page = link.getAttribute("href").split("/").pop();
+        link.classList.toggle("active", page === currentPage);
     });
+}
+
+function updateNotificationBadge() {
+    const requestsLink = document.querySelector('a[data-nav="requests"]');
+    if (!requestsLink || !isLoggedIn()) return;
+
+    const requests = appStore.updateExpiredRequests();
+    const myPhone = getLoggedDonorPhone();
+    const pendingCount = requests.filter(item => item.toPhone === myPhone && item.status === "pending").length;
+
+    let badge = requestsLink.querySelector(".notification-badge");
+    if (badge) badge.remove();
+
+    if (pendingCount > 0) {
+        requestsLink.style.position = "relative";
+        badge = document.createElement("span");
+        badge.className = "notification-badge";
+        badge.textContent = pendingCount > 99 ? "99+" : String(pendingCount);
+        requestsLink.appendChild(badge);
+    }
 }
 
 setInterval(updateNotificationBadge, 5000);

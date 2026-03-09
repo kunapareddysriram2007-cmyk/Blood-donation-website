@@ -3,118 +3,86 @@ document.addEventListener("DOMContentLoaded", function () {
     updateNotificationBadge();
 });
 
-function escapeHtml(value) {
-    return String(value || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
 function loadRequestsForLoggedInDonor() {
-    try {
-        const loggedDonorPhone = getLoggedDonorPhone();
-        if (!loggedDonorPhone) return;
+    const myPhone = getLoggedDonorPhone();
+    const noRequestsMessage = document.getElementById("noRequestsMessage");
+    const requestsContainer = document.getElementById("requestsContainer");
+    const body = document.getElementById("requestsTableBody");
 
-        const allRequests = JSON.parse(localStorage.getItem("requests")) || [];
-        const donorRequests = allRequests.filter(req => req.toPhone === loggedDonorPhone);
+    if (!myPhone || !body) return;
 
-        if (donorRequests.length === 0) {
-            document.getElementById("noRequestsMessage").classList.remove("hidden");
-            document.getElementById("requestsContainer").classList.add("hidden");
-            return;
-        }
+    const requests = appStore.updateExpiredRequests().filter(request => request.toPhone === myPhone);
+    body.innerHTML = "";
 
-        displayRequests(donorRequests);
-    } catch (err) {
-        console.error("Request load error:", err);
+    if (!requests.length) {
+        noRequestsMessage.classList.remove("hidden");
+        requestsContainer.classList.add("hidden");
+        return;
     }
-}
 
-function displayRequests(requests) {
-    const tableBody = document.getElementById("requestsTableBody");
-    tableBody.innerHTML = "";
+    noRequestsMessage.classList.add("hidden");
+    requestsContainer.classList.remove("hidden");
 
     requests.sort((a, b) => new Date(b.time) - new Date(a.time));
 
-    requests.forEach(function (req) {
+    requests.forEach(request => {
         const row = document.createElement("tr");
+        const typeHtml = request.emergency
+            ? '<span class="badge badge-danger">Emergency</span>'
+            : '<span class="badge badge-info">Normal</span>';
 
-        const emergencyHtml = req.emergency ? '<span class="badge badge-danger">Emergency</span>' : '<span class="badge badge-info">Normal</span>';
+        let actionHtml = "";
+        let statusHtml = '<span class="badge badge-muted">Pending</span>';
 
-        let actionHtml = '';
-        let statusHtml = '';
-
-        if (req.status === 'pending') {
-            actionHtml = `<button class="btn btn-primary btn-small" onclick="acceptRequest('${req.id}')">Accept</button> ` +
-                         `<button class="btn btn-danger btn-small" onclick="rejectRequest('${req.id}')">Reject</button>`;
-            statusHtml = '<span class="text-muted">Pending</span>';
-        } else if (req.status === 'accepted') {
-            actionHtml = '';
-            statusHtml = `<span class="badge badge-success">Accepted</span><br><small>Requester: ${escapeHtml(req.fromPhone)}</small>`;
-        } else if (req.status === 'rejected') {
-            actionHtml = '';
-            statusHtml = `<span class="badge badge-danger">Rejected</span><br><small>Requester: ${escapeHtml(req.fromPhone)}</small>`;
-        } else if (req.status === 'denied') {
-            actionHtml = '';
-            statusHtml = `<span class="badge badge-warning">Auto-denied</span><br><small>Requester: ${escapeHtml(req.fromPhone)}</small>`;
+        if (request.status === "pending") {
+            actionHtml = `
+                <div class="btn-group">
+                    <button type="button" class="btn btn-primary btn-small" data-action="accept" data-id="${request.id}">Accept</button>
+                    <button type="button" class="btn btn-danger btn-small" data-action="reject" data-id="${request.id}">Reject</button>
+                </div>
+            `;
+        } else if (request.status === "accepted") {
+            statusHtml = `<span class="badge badge-success">Accepted</span><br><small class="text-muted">${escapeHtml(request.fromPhone)}</small>`;
+        } else if (request.status === "rejected") {
+            statusHtml = `<span class="badge badge-danger">Rejected</span><br><small class="text-muted">${escapeHtml(request.fromPhone)}</small>`;
+        } else if (request.status === "denied") {
+            statusHtml = `<span class="badge badge-warning">Auto-denied</span><br><small class="text-muted">${escapeHtml(request.fromPhone)}</small>`;
         }
 
         row.innerHTML = `
-            <td><strong>${escapeHtml(req.fromName || req.fromPhone)}</strong></td>
-            <td>${escapeHtml(req.fromCity || 'N/A')}</td>
-            <td>${getTimeAgo(req.time)}<br><small style="color:#999">${formatDateTime(req.time)}</small></td>
-            <td>${emergencyHtml}</td>
-            <td>${actionHtml}</td>
+            <td><strong>${escapeHtml(request.fromName || request.fromPhone)}</strong></td>
+            <td>${escapeHtml(request.fromCity || "N/A")}</td>
+            <td>${getTimeAgo(request.time)}<br><small class="text-muted">${formatDateTime(request.time)}</small></td>
+            <td>${typeHtml}</td>
+            <td>${actionHtml || '<span class="text-muted">No action</span>'}</td>
             <td>${statusHtml}</td>
         `;
-
-        tableBody.appendChild(row);
+        body.appendChild(row);
     });
 
-    document.getElementById("noRequestsMessage").classList.add("hidden");
-    document.getElementById("requestsContainer").classList.remove("hidden");
+    bindRequestActionButtons();
 }
 
-function acceptRequest(id) {
-    const all = JSON.parse(localStorage.getItem("requests")) || [];
-    const idx = all.findIndex(r => r.id === id);
-    if (idx === -1) return;
-    all[idx].status = 'accepted';
-    localStorage.setItem("requests", JSON.stringify(all));
-    updateNotificationBadge();
+function bindRequestActionButtons() {
+    document.querySelectorAll("[data-action][data-id]").forEach(button => {
+        button.addEventListener("click", function () {
+            const action = button.dataset.action;
+            const requestId = button.dataset.id;
+            updateRequestStatus(requestId, action === "accept" ? "accepted" : "rejected");
+        });
+    });
+}
+
+function updateRequestStatus(requestId, status) {
+    const requests = appStore.getRequests();
+    const index = requests.findIndex(request => request.id === requestId);
+    if (index === -1) return;
+
+    requests[index].status = status;
+    appStore.saveRequests(requests);
+    showAlert(document.getElementById("requestsAlert"), `Request ${status}.`, "success");
     loadRequestsForLoggedInDonor();
-}
-
-function rejectRequest(id) {
-    const all = JSON.parse(localStorage.getItem("requests")) || [];
-    const idx = all.findIndex(r => r.id === id);
-    if (idx === -1) return;
-    all[idx].status = 'rejected';
-    localStorage.setItem("requests", JSON.stringify(all));
     updateNotificationBadge();
-    loadRequestsForLoggedInDonor();
-}
-
-function getTimeAgo(dateString) {
-    const now = new Date();
-    const time = new Date(dateString);
-    const diff = now - time;
-
-    const mins = Math.floor(diff / 60000);
-    const hrs = Math.floor(mins / 60);
-    const days = Math.floor(hrs / 24);
-
-    if (mins < 1) return "Just now";
-    if (mins < 60) return `${mins} min ago`;
-    if (hrs < 24) return `${hrs} hr ago`;
-    if (days < 7) return `${days} day ago`;
-    return "Older";
-}
-
-function formatDateTime(dateString) {
-    const d = new Date(dateString);
-    return d.toLocaleString();
 }
 
 setInterval(function () {
